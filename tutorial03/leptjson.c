@@ -4,6 +4,7 @@
 #include <math.h>    /* HUGE_VAL */
 #include <stdlib.h>  /* NULL, malloc(), realloc(), free(), strtod() */
 #include <string.h>  /* memcpy() */
+#include <stdio.h>
 
 #ifndef LEPT_PARSE_STACK_INIT_SIZE
 #define LEPT_PARSE_STACK_INIT_SIZE 256
@@ -93,7 +94,27 @@ static int lept_parse_string(lept_context* c, lept_value* v) {
     p = c->json;
     for (;;) {
         char ch = *p++;
+        if (ch > 0 && ch <= 31){
+            return LEPT_PARSE_INVALID_STRING_CHAR;
+        }
         switch (ch) {
+            case '\\':
+                ch = *p++;
+                switch (ch)
+                {
+                case '/': PUTC(c, '/'); break;
+                case '\\': PUTC(c, '\\'); break;
+                case 'b': PUTC(c, '\b'); break;
+                case 'f': PUTC(c, '\f'); break;
+                case 'n': PUTC(c, '\n'); break;
+                case 'r': PUTC(c, '\r'); break;
+                case 't': PUTC(c, '\t'); break;
+                case '"': PUTC(c, '\"'); break;
+                default: 
+                    c->top = head;
+                    return LEPT_PARSE_INVALID_STRING_ESCAPE;
+                }
+                break;
             case '\"':
                 len = c->top - head;
                 lept_set_string(v, (const char*)lept_context_pop(c, len), len);
@@ -153,12 +174,14 @@ lept_type lept_get_type(const lept_value* v) {
 }
 
 int lept_get_boolean(const lept_value* v) {
-    /* \TODO */
-    return 0;
+    assert(v != NULL && (v->type == LEPT_TRUE || v->type == LEPT_FALSE));
+    return (v->type == LEPT_TRUE);
 }
 
 void lept_set_boolean(lept_value* v, int b) {
-    /* \TODO */
+    assert(b == 1 || b == 0);
+    lept_free(v);
+    v->type = b ? LEPT_TRUE : LEPT_FALSE;
 }
 
 double lept_get_number(const lept_value* v) {
@@ -167,7 +190,10 @@ double lept_get_number(const lept_value* v) {
 }
 
 void lept_set_number(lept_value* v, double n) {
-    /* \TODO */
+    assert(v!=NULL);
+    lept_free(v);
+    v->u.n = n;
+    v->type = LEPT_NUMBER;
 }
 
 const char* lept_get_string(const lept_value* v) {

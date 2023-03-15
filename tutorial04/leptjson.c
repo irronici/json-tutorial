@@ -90,20 +90,97 @@ static int lept_parse_number(lept_context* c, lept_value* v) {
     return LEPT_PARSE_OK;
 }
 
+int get_hex4(const char* p){
+    const char* c = p;
+    unsigned num = 0;
+    for(int i=0;i<4;i++){
+        fprintf(stderr, "%d: %c\n", i, *c);
+        unsigned value = 0;
+        if (*c >= '0' && *c <= '9'){
+            value = *c - '0';
+        }else if(*c >= 'a' && *c <= 'f'){
+            value = *c - 'a' + 10;
+        }else if(*c >= 'A' && *c <= 'F'){
+            value = *c - 'A' + 10;
+        }else{
+            fprintf(stderr, "in get_hex4, error occur\n");
+            return -1;
+        }
+        num = num * 16 + value;
+        c++;
+    }
+    return num;
+}
+
+#define GET_HEX_IN_U(num, u, index)\
+do{\
+    if((num = get_hex4(c)) != -1){\
+        u[index]=num;\
+    }else{\
+        return NULL;\
+    }\
+} while (0);
+
+// static const char* lept_parse_hex4(const char* p, unsigned* u) {
+//     u = (unsigned*)malloc(2*sizeof(unsigned));
+//     unsigned num = 0;
+//     const char* c = p;
+//     GET_HEX_IN_U(num, u, 0);
+//     c+=4;
+//     GET_HEX_IN_U(num, u, 1);
+//     return c;
+// }
+
 static const char* lept_parse_hex4(const char* p, unsigned* u) {
-    /* \TODO */
+    unsigned num = 0;
+    for(int i = 0; i < 4; i++){
+        unsigned value = 0;
+        fprintf(stderr, "%d: %c\n", i, *p);
+        if (*p >= '0' && *p <= '9'){
+            value = *p - '0';
+        }else if(*p >= 'a' && *p <= 'f'){
+            value = *p - 'a' + 10;
+        }else if(*p >= 'A' && *p <= 'F'){
+            value = *p - 'A' + 10;
+        }else{
+            fprintf(stderr, "in get_hex4, error occur\n");
+            return NULL;
+        }
+        num = num * 16 + value;
+        p++;
+    }
+    *u = num;
+    fprintf(stderr, "in lept_parse_hex4, num: %u, %u\n", num, *u);
     return p;
 }
 
+unsigned get_codepoint(unsigned H, unsigned L){
+    return 0x10000 + (H - 0xD800) * 0x400 + (L - 0xDC00);
+}
+
 static void lept_encode_utf8(lept_context* c, unsigned u) {
-    /* \TODO */
+    assert(u <= 0x10FFFF && u >= 0x0000);
+    if (u<=0x007F){
+        PUTC(c,  u       & 0x7F);
+    }else if (u >= 0x0080 && u <=0x07FF){
+        PUTC(c, 0xC0 | (u >> 6) & 0xDF);
+        PUTC(c, 0x80 |  u       & 0xBF);
+    }else if (u >= 0x0800 && u <= 0xFFFF) {
+        PUTC(c, 0xE0 | ((u >> 12) & 0xFF)); /* 0xE0 = 11100000 */
+        PUTC(c, 0x80 | ((u >>  6) & 0x3F)); /* 0x80 = 10000000 */
+        PUTC(c, 0x80 | ( u        & 0x3F)); /* 0x3F = 00111111 */
+    }else if(u >= 0x10000 && u <= 0x10FFFF){
+        PUTC(c, 0xF0 | ((u >> 18) & 0xF7));
+        PUTC(c, 0x80 | ((u >> 12) & 0xBF));
+        PUTC(c, 0x80 | ((u >> 6 ) & 0xBF));
+        PUTC(c, 0x80 | ( u        & 0xBF));
+    }
 }
 
 #define STRING_ERROR(ret) do { c->top = head; return ret; } while(0)
 
 static int lept_parse_string(lept_context* c, lept_value* v) {
     size_t head = c->top, len;
-    unsigned u;
     const char* p;
     EXPECT(c, '\"');
     p = c->json;
@@ -126,11 +203,82 @@ static int lept_parse_string(lept_context* c, lept_value* v) {
                     case 'r':  PUTC(c, '\r'); break;
                     case 't':  PUTC(c, '\t'); break;
                     case 'u':
-                        if (!(p = lept_parse_hex4(p, &u)))
+                    {
+                        unsigned* u = 0;
+                        fprintf(stderr, "--------------------\n");
+                        if (!(p = lept_parse_hex4(p,&u))){
                             STRING_ERROR(LEPT_PARSE_INVALID_UNICODE_HEX);
-                        /* \TODO surrogate handling */
-                        lept_encode_utf8(c, u);
+                        }
+                        unsigned value = u;
+                        if ((u >= 0xD800) && (u <= 0xDBFF)){   //BMP之外, 用代理对来表示
+                            fprintf(stderr, "out of BMP, %u, %u, %u, %u\n", u, (u >= 0xD800 && u <= 0xDBFF), (u >= 0xD800), (u <= 0xDBFF));
+                            if (*p++ != '\\'){
+                                STRING_ERROR(LEPT_PARSE_INVALID_UNICODE_SURROGATE);
+                            }
+                            if (*p++ != 'u'){
+                                STRING_ERROR(LEPT_PARSE_INVALID_UNICODE_SURROGATE);
+                            }
+                            if (*p == NULL){
+                                STRING_ERROR(LEPT_PARSE_INVALID_UNICODE_SURROGATE);
+                            }
+                            unsigned low_u = 0;
+                            if (!(p = lept_parse_hex4(p,&low_u))){
+                                STRING_ERROR(LEPT_PARSE_INVALID_UNICODE_HEX);
+                            }
+                            if (!(u >= 0xD800 && u <= 0xDBFF && low_u >= 0xDC00 && low_u <= 0xDFFF)){
+                                STRING_ERROR(LEPT_PARSE_INVALID_UNICODE_SURROGATE);
+                            }
+                            value = get_codepoint(u, low_u);
+                            fprintf(stderr, "out of BMP, value: %u\n", value);
+                        }else{
+                            fprintf(stderr, "in BMP, %u, %u, %u, %u\n", u, (u >= 0xD800 && u <= 0xDBFF), (u >= 0xD800), (u <= 0xDBFF));
+                        }
+                        fprintf(stderr, "value: %u\n", value);
+                        lept_encode_utf8(c, value);
+                        
+                        
+                        // fprintf(stderr, "--------------------\n");
+                        // unsigned value = get_hex4(p);
+                        // if (value == -1){
+                        //     STRING_ERROR(LEPT_PARSE_INVALID_UNICODE_HEX);
+                        // }
+                        // fprintf(stderr, "value: %u\n", value);
+                        // if (value >= 0xD800){   //BMP之外, 又代理对来表示
+                        //     fprintf(stderr, "out of BMP\n");
+                        //     const char* tt = p + 4;
+                        //     if (tt[0]!='\\' || tt[1]!='u' || tt[2]==NULL){
+                        //         STRING_ERROR(LEPT_PARSE_INVALID_UNICODE_SURROGATE);
+                        //     }
+                        //     tt+=2;
+                        //     for (size_t i = 0; i < 4; i++){
+                        //         if (*tt == NULL){
+                        //             STRING_ERROR(LEPT_PARSE_INVALID_UNICODE_SURROGATE);
+                        //         }
+                        //         tt++;
+                        //     }
+                        //     unsigned low_value = get_hex4(tt-4);
+                        //     if(low_value == -1){
+                        //         STRING_ERROR(LEPT_PARSE_INVALID_UNICODE_HEX);
+                        //     }else{
+                        //         p = tt;
+                        //     }
+                        //     // if (!(p = lept_parse_hex4(p, &u)))
+                        //     //     STRING_ERROR(LEPT_PARSE_INVALID_UNICODE_HEX);
+                        //     /* \TODO surrogate handling */
+                        //     //高代理项: U+D800 至 U+DBFF ; 低代理项: U+DC00 至 U+DFFF
+                        //     if (!(value >= 0xD800 && value <= 0xDBFF && low_value >= 0xDC00 && low_value <= 0xDFFF)){
+                        //         STRING_ERROR(LEPT_PARSE_INVALID_UNICODE_SURROGATE);
+                        //     }
+                        //     lept_encode_utf8(c, get_codepoint(value, low_value));
+                        // }else{  //BMP之内, 直接作为码点
+                        //     fprintf(stderr, "in BMP\n");
+                        //     assert(value >= 0 && value < 0xD800);
+                        //     lept_encode_utf8(c, value);
+                        //     p +=4;
+                        // }
+                        
                         break;
+                    }
                     default:
                         STRING_ERROR(LEPT_PARSE_INVALID_STRING_ESCAPE);
                 }
